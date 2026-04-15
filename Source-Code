@@ -1,0 +1,481 @@
+#include "esp_camera.h"
+#include "esp_task_wdt.h" // Watchdog
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#include <WiFi.h>
+#include <WiFiClientSecure.h>
+#include <Wire.h>
+#include <time.h>
+
+// ---------------- OLED ----------------
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
+
+// ---------------- WiFi ----------------
+const char *ssid = "Wifi SSID";
+const char *pwd = "Wifi Password";
+const char *apiKey = "YourApikey";
+const char *phone = "Yourphonenumber";
+
+// ---------------- Encoder ----------------
+#define CLK 15
+#define DT 3
+#define SW 2
+
+// ---------------- Users ----------------
+String users[] = {"Vedha", "Arun", "Priya", "Kiran"};
+int totalUsers = 4;
+int selectedIndex = 0;
+
+// ---------------- Mode ----------------
+int modeIndex = 0;
+String modeOptions[] = {"IN", "OUT"};
+
+// ---------------- State ----------------
+bool selectingMode = false;
+unsigned long bootTime;
+int lastCLK = HIGH;
+bool lastSW = HIGH;
+unsigned long lastEncoderMove = 0;
+unsigned long lastSWPress = 0;
+
+// ---------------- Camera Init ----------------
+void initCam() {
+  camera_config_t cfg;
+  cfg.ledc_channel = LEDC_CHANNEL_0;
+  cfg.ledc_timer = LEDC_TIMER_0;
+  cfg.pin_d0 = 5;
+  cfg.pin_d1 = 18;
+  cfg.pin_d2 = 19;
+  cfg.pin_d3 = 21;
+  cfg.pin_d4 = 36;
+  cfg.pin_d5 = 39;
+  cfg.pin_d6 = 34;
+  cfg.pin_d7 = 35;
+  cfg.pin_xclk = 0;
+  cfg.pin_pclk = 22;
+  cfg.pin_vsync = 25;
+  cfg.pin_href = 23;
+  cfg.pin_sscb_sda = 26;
+  cfg.pin_sscb_scl = 27;
+  cfg.pin_pwdn = 32;
+  cfg.pin_reset = -1;
+
+  cfg.xclk_freq_hz = 20000000;
+  cfg.pixel_format = PIXFORMAT_JPEG;
+  cfg.frame_size = FRAMESIZE_QVGA; // Keep QVGA — smaller = more stable
+  cfg.jpeg_quality = 12;
+  cfg.fb_count = 1; // Single buffer — safer with OLED
+
+  if (esp_camera_init(&cfg) != ESP_OK) {
+    Serial.println("Camera Init Failed");
+    ESP.restart();
+  }
+}
+
+// ---------------- OLED Init ----------------
+void initOLED() {
+  Wire.begin(14, 13);
+  Wire.setClock(100000);
+  delay(100);
+
+  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+    if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3D)) {
+      Serial.println("OLED FAIL");
+      while (true)
+        ;
+    }
+  }
+
+  display.clearDisplay();
+  display.setTextColor(WHITE);
+  display.display();
+}
+
+// ---------------- OLED Screens ----------------
+void showWelcome() {
+  display.clearDisplay();
+  display.setTextSize(2);
+  display.setCursor(5, 20);
+  display.println("Attendance");
+  display.display();
+  delay(2000);
+}
+
+void showUsers() {
+  display.clearDisplay();
+  display.setTextSize(2); // Bigger text
+
+  // At size 2: each row is ~16px tall; fit 3 rows with 21px spacing on 64px
+  // screen
+  int rowH = 21;
+  int visible = 3;
+  int startIdx = selectedIndex - 1;
+  if (startIdx < 0)
+    startIdx = 0;
+  if (startIdx > totalUsers - visible)
+    startIdx = max(0, totalUsers - visible);
+
+  for (int i = startIdx; i < min(startIdx + visible, totalUsers); i++) {
+    int y = (i - startIdx) * rowH;
+    if (i == selectedIndex) {
+      display.fillRect(0, y, SCREEN_WIDTH, rowH, WHITE);
+      display.setTextColor(BLACK);
+    } else {
+      display.setTextColor(WHITE);
+    }
+    display.setCursor(4, y + 2);
+    display.println(users[i]);
+  }
+
+  display.setTextColor(WHITE);
+  display.display();
+}
+
+void showMode() {
+  display.clearDisplay();
+
+  // Header: name in size 1 to save space, then a divider
+  display.setTextSize(1);
+  display.setTextColor(WHITE);
+  display.setCursor(0, 0);
+  display.println(users[selectedIndex]);
+  display.drawLine(0, 10, SCREEN_WIDTH, 10, WHITE);
+
+  // Options in size 2
+  display.setTextSize(2);
+
+  if (modeIndex == 0) {
+    display.fillRect(0, 14, SCREEN_WIDTH, 22, WHITE);
+    display.setTextColor(BLACK);
+  } else {
+    display.setTextColor(WHITE);
+  }
+  display.setCursor(4, 16);
+  display.println("IN");
+
+  if (modeIndex == 1) {
+    display.fillRect(0, 40, SCREEN_WIDTH, 22, WHITE);
+    display.setTextColor(BLACK);
+  } else {
+    display.setTextColor(WHITE);
+  }
+  display.setCursor(4, 42);
+  display.println("OUT");
+
+  display.setTextColor(WHITE);
+  display.display();
+}
+
+void showMessage(String msg) {
+  display.clearDisplay();
+  display.setTextSize(2); // Bigger text
+  display.setTextColor(WHITE);
+  display.setCursor(0, 10);
+  display.println(msg);
+  display.display();
+}
+
+void showCountdown() {
+  for (int i = 3; i >= 1; i--) {
+    display.clearDisplay();
+    display.setTextSize(4);
+    display.setTextColor(WHITE);
+    display.setCursor(55, 12);
+    display.println(i);
+    display.display();
+    esp_task_wdt_reset(); // Feed watchdog during delay
+    delay(1000);
+  }
+  display.clearDisplay();
+  display.setTextSize(2);
+  display.setTextColor(WHITE);
+  display.setCursor(10, 20);
+  display.println("Cheese! :)");
+  display.display();
+  delay(300);
+}
+
+// ---------------- Encoder ----------------
+int readEncoderDelta() {
+  int clkState = digitalRead(CLK);
+  if (clkState == LOW && lastCLK == HIGH) {
+    lastCLK = clkState;
+    if (millis() - lastEncoderMove < 200)
+      return 0;
+    lastEncoderMove = millis();
+    return (digitalRead(DT) != clkState) ? 1 : -1;
+  }
+  lastCLK = clkState;
+  return 0;
+}
+
+bool readSWPress() {
+  bool swState = digitalRead(SW);
+  if (swState == LOW && lastSW == HIGH) {
+    lastSW = swState; // record edge immediately
+    if (millis() - lastSWPress > 300) {
+      lastSWPress = millis();
+      return true;
+    }
+    return false;
+  }
+  if (swState == HIGH)
+    lastSW = HIGH; // only reset when button is released
+  return false;
+}
+
+// ---------------- WhatsApp Send ----------------
+// ✅ NO camera deinit — pass image buffer directly
+void sendWa(uint8_t *imgBuf, size_t imgLen) {
+
+  if (WiFi.status() != WL_CONNECTED) {
+    showMessage("Reconnecting\nWiFi...");
+    WiFi.reconnect();
+    int w = 0;
+    while (WiFi.status() != WL_CONNECTED && w < 20) {
+      delay(500);
+      w++;
+      esp_task_wdt_reset();
+    }
+    if (WiFi.status() != WL_CONNECTED) {
+      showMessage("WiFi Lost!\nRestarting...");
+      delay(2000);
+      ESP.restart();
+    }
+  }
+
+  WiFiClientSecure client;
+  client.setInsecure();
+  client.setTimeout(20);
+
+  showMessage("Connecting\nto server...");
+  esp_task_wdt_reset();
+
+  if (!client.connect("www.circuitdigest.cloud", 443)) {
+    Serial.println("Server Connection Failed");
+    showMessage("Server Failed!\nRetry later.");
+    delay(2000);
+    return;
+  }
+
+  esp_task_wdt_reset();
+
+  struct tm ti;
+  char ts[64] = "Time Unknown";
+  if (getLocalTime(&ti, 1000)) {
+    strftime(ts, 64, "%I:%M %p, %B %d, %Y", &ti);
+  }
+
+  String name = users[selectedIndex];
+  String statusMode = modeOptions[modeIndex];
+
+  String variables = "{\"event_type\":\"" + name + " - " + statusMode +
+                     "\","
+                     "\"location\":\"Office\","
+                     "\"device_name\":\"ESP32 CAM #1\","
+                     "\"captured_time\":\"" +
+                     String(ts) + "\"}";
+
+  String b = "ESP32CAMBound7MA4YWxkTrZu0gW";
+  String cr = "\r\n";
+  String d = "--";
+
+  String body =
+      d + b + cr + "Content-Disposition: form-data; name=\"phone_number\"" +
+      cr + cr + String(phone) + cr + d + b + cr +
+      "Content-Disposition: form-data; name=\"template_id\"" + cr + cr +
+      "image_capture_alert" + cr + d + b + cr +
+      "Content-Disposition: form-data; name=\"variables\"" + cr + cr +
+      variables + cr + d + b + cr +
+      "Content-Disposition: form-data; name=\"image\"; filename=\"p.jpg\"" +
+      cr + "Content-Type: image/jpeg" + cr + cr;
+
+  String endPart = cr + d + b + d + cr;
+
+  int totalLen = body.length() + imgLen + endPart.length();
+
+  client.println("POST /api/v1/whatsapp/send-with-image HTTP/1.1");
+  client.println("Host: www.circuitdigest.cloud\r\nAuthorization: " +
+                 String(apiKey));
+  client.println("Content-Type: multipart/form-data; boundary=" + b);
+  client.println("Content-Length: " + String(totalLen) + "\r\n");
+
+  esp_task_wdt_reset();
+  showMessage("Uploading\nimage...");
+
+  client.print(body);
+  client.write(imgBuf, imgLen);
+  client.print(endPart);
+
+  esp_task_wdt_reset();
+
+  // Read response
+  Serial.println("--- Server Response ---");
+  while (client.connected()) {
+    esp_task_wdt_reset();
+    String line = client.readStringUntil('\n');
+    Serial.println(line);
+    if (line == "\r")
+      break;
+  }
+  while (client.available()) {
+    esp_task_wdt_reset();
+    Serial.println(client.readStringUntil('\n'));
+  }
+  Serial.println("-----------------------");
+
+  client.stop();
+
+  showMessage("Sent!\n" + name + " - " + statusMode);
+  delay(2000);
+}
+
+// ---------------- Capture ----------------
+void captureImage() {
+  showCountdown();
+
+  // ✅ Discard first frame (camera auto-exposure needs 1 warm-up frame)
+  esp_task_wdt_reset();
+  camera_fb_t *warmup = esp_camera_fb_get();
+  if (warmup)
+    esp_camera_fb_return(warmup);
+
+  // Capture real frame
+  camera_fb_t *fb = esp_camera_fb_get();
+
+  if (!fb) {
+    showMessage("Capture Failed!\nTry again.");
+    delay(2000);
+    return;
+  }
+
+  // ✅ Copy to heap buffer — do NOT deinit camera
+  uint8_t *imgBuf = (uint8_t *)ps_malloc(fb->len); // Use PSRAM if available
+  if (!imgBuf) {
+    imgBuf = (uint8_t *)malloc(fb->len); // Fallback to normal RAM
+  }
+
+  if (!imgBuf) {
+    Serial.println("Memory alloc failed!");
+    esp_camera_fb_return(fb);
+    showMessage("Memory Error!\nTry again.");
+    delay(2000);
+    return;
+  }
+
+  size_t imgLen = fb->len;
+  memcpy(imgBuf, fb->buf, imgLen);
+  esp_camera_fb_return(fb); // Return frame buffer immediately
+
+  Serial.printf("Image size: %d bytes\n", imgLen);
+
+  sendWa(imgBuf, imgLen);
+
+  free(imgBuf); // Free after send
+}
+
+// ---------------- Setup ----------------
+void setup() {
+  Serial.begin(115200);
+
+  // Force boot-sensitive pins LOW
+  pinMode(12, OUTPUT);
+  digitalWrite(12, LOW);
+  pinMode(15, OUTPUT);
+  digitalWrite(15, LOW);
+
+  delay(2000);
+
+  pinMode(4, OUTPUT); // Flash LED — keep OFF always
+  digitalWrite(4, LOW);
+
+  pinMode(CLK, INPUT);
+  pinMode(DT, INPUT);
+  pinMode(SW, INPUT_PULLUP);
+
+  lastCLK = digitalRead(CLK);
+  lastSW = digitalRead(SW);
+
+  // ✅ Watchdog set to 30 seconds (IDF v5.x API)
+  esp_task_wdt_config_t wdt_cfg = {.timeout_ms = 30000, // 30 seconds
+                                   .idle_core_mask = 0,
+                                   .trigger_panic = true};
+  esp_task_wdt_reconfigure(&wdt_cfg);
+  esp_task_wdt_add(NULL);
+
+  initOLED();
+  showWelcome();
+
+  initCam();
+
+  showMessage("Connecting WiFi");
+  WiFi.begin(ssid, pwd);
+
+  int retries = 0;
+  while (WiFi.status() != WL_CONNECTED && retries < 20) {
+    delay(500);
+    Serial.print(".");
+    retries++;
+    esp_task_wdt_reset();
+  }
+
+  if (WiFi.status() != WL_CONNECTED) {
+    showMessage("WiFi Failed!\nCheck SSID/Pass");
+    delay(3000);
+    ESP.restart();
+  }
+
+  Serial.println("\nWiFi Connected: " + WiFi.localIP().toString());
+  showMessage("WiFi OK!");
+  delay(1000);
+
+  configTime(19800, 0, "pool.ntp.org");
+
+  bootTime = millis();
+  showUsers();
+}
+
+// ---------------- Loop ----------------
+void loop() {
+  esp_task_wdt_reset();
+
+  if (millis() - bootTime < 3000)
+    return;
+
+  int delta = readEncoderDelta();
+  bool pressed = readSWPress();
+
+  if (!selectingMode) {
+    if (delta != 0) {
+      selectedIndex += delta;
+      if (selectedIndex >= totalUsers)
+        selectedIndex = 0;
+      if (selectedIndex < 0)
+        selectedIndex = totalUsers - 1;
+      showUsers();
+    }
+    if (pressed) {
+      selectingMode = true;
+      modeIndex = 0;
+      showMode();
+    }
+  } else {
+    if (delta != 0) {
+      modeIndex += delta;
+      if (modeIndex >= 2)
+        modeIndex = 0;
+      if (modeIndex < 0)
+        modeIndex = 1;
+      showMode();
+    }
+    if (pressed) {
+      showMessage(users[selectedIndex] + "\n" + modeOptions[modeIndex]);
+      delay(1000);
+      captureImage();
+      selectingMode = false;
+      showUsers();
+    }
+  }
+}
