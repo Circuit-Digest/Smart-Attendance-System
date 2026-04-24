@@ -48,9 +48,8 @@ Traditional manual attendance systems are repetitive, error-prone, and time-cons
 | 2 | **Rotary Encoder** | Navigate and select menu options |
 | 3 | **OLED Display (0.96")** | Display student names and system status |
 | 4 | **Perf/Puff Board** | Easy component interconnection |
-| 5 | **Enclosure / Case** | Protection and clean form factor |
-| 6 | **USB Power Supply (5V)** | Power the system |
-| 7 | **Jumper Wires** | Circuit connections |
+| 5 | **USB Power Supply (5V)** | Power the system |
+| 6 | **Jumper Wires** | Circuit connections |
 
 ---
 
